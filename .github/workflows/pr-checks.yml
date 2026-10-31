@@ -1,0 +1,61 @@
+name: PR checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-checks:
+    name: Repository checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check tracked text and JSON files
+        shell: python
+        run: |
+          import json
+          import pathlib
+          import re
+          import subprocess
+          import sys
+
+          paths = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+          errors = []
+          marker = re.compile(r"^(?:<{7}|={7}|>{7}|\|{7})(?:\s|$)")
+          for name in filter(None, paths):
+              path = pathlib.Path(name)
+              if path.is_symlink() or not path.is_file():
+                  continue
+              data = path.read_bytes()
+              if b"\0" in data:
+                  continue
+              try:
+                  text = data.decode("utf-8")
+              except UnicodeDecodeError:
+                  continue
+              for number, line in enumerate(text.splitlines(), 1):
+                  if marker.match(line):
+                      errors.append(f"{name}:{number}: possible unresolved merge conflict")
+              if path.suffix.lower() == ".json":
+                  try:
+                      json.loads(text)
+                  except ValueError as error:
+                      errors.append(f"{name}: invalid JSON: {error}")
+          for error in errors:
+              print(error)
+          if errors:
+              sys.exit(1)
+          print("Tracked text contains no conflict markers; JSON syntax is valid.")
